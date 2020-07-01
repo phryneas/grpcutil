@@ -6,6 +6,7 @@ package gentstypes
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"html/template"
 	"log"
 	"os"
@@ -26,6 +27,7 @@ const indent = "    "
 
 type Parameters struct {
 	AsyncIterators        bool
+	Observables           bool
 	DeclareNamespace      bool
 	OutputNamePattern     string
 	DumpRequestDescriptor bool
@@ -135,7 +137,15 @@ func (g *Generator) GenerateAllFiles(params *Parameters) {
 	}
 }
 
+
+type GenerateFileName func(f *desc.FileDescriptor) string
+
 func (g *Generator) generate(f *desc.FileDescriptor, params *Parameters) {
+	if params.Observables {
+		g.W("import { Observable } from 'rxjs';")
+		g.W("import { Metadata } from 'grpc';")
+	}
+
 	// TODO: consider best order
 	ns := params.DeclareNamespace && f.GetPackage() != ""
 	if ns {
@@ -143,9 +153,19 @@ func (g *Generator) generate(f *desc.FileDescriptor, params *Parameters) {
 		g.incIndent()
 	}
 
+	gfn := func(otherFile *desc.FileDescriptor) string {
+		otherFileName := genName(g.Request, otherFile, params.OutputNamePattern) 
+		ownFileName := genName(g.Request, f, params.OutputNamePattern) 
+		rel, _ := filepath.Rel(filepath.Dir(ownFileName), otherFileName)
+		if strings.HasPrefix(rel, "../") {
+			return rel;
+		}
+		return fmt.Sprintf("./%s", rel)
+	}
+
 	g.generateEnums(f.GetEnumTypes(), params)
-	g.generateMessages(f.GetMessageTypes(), params)
-	g.generateServices(f.GetServices(), params)
+	g.generateMessages(f.GetMessageTypes(), params, gfn)
+	g.generateServices(f.GetServices(), params, gfn)
 
 	if ns {
 		g.decIndent()
@@ -162,9 +182,9 @@ func (g *Generator) generate(f *desc.FileDescriptor, params *Parameters) {
 	g.Buffer.Reset()
 }
 
-func (g *Generator) generateMessages(messages []*desc.MessageDescriptor, params *Parameters) {
+func (g *Generator) generateMessages(messages []*desc.MessageDescriptor, params *Parameters, gfn GenerateFileName) {
 	for _, m := range messages {
-		g.generateMessage(m, params)
+		g.generateMessage(m, params, gfn)
 	}
 }
 func (g *Generator) generateEnums(enums []*desc.EnumDescriptor, params *Parameters) {
@@ -172,19 +192,19 @@ func (g *Generator) generateEnums(enums []*desc.EnumDescriptor, params *Paramete
 		g.generateEnum(e, params)
 	}
 }
-func (g *Generator) generateServices(services []*desc.ServiceDescriptor, params *Parameters) {
+func (g *Generator) generateServices(services []*desc.ServiceDescriptor, params *Parameters, gfn GenerateFileName) {
 	for _, e := range services {
-		g.generateService(e, params)
+		g.generateService(e, params, gfn)
 	}
 }
 
-func (g *Generator) generateMessage(m *desc.MessageDescriptor, params *Parameters) {
+func (g *Generator) generateMessage(m *desc.MessageDescriptor, params *Parameters, gfn GenerateFileName) {
 	// TODO: namespace messages?
 	for _, e := range m.GetNestedEnumTypes() {
 		g.generateEnum(e, params)
 	}
 	for _, m := range m.GetNestedMessageTypes() {
-		g.generateMessage(m, params)
+		g.generateMessage(m, params, gfn)
 	}
 	name := packageQualifiedName(m)
 
@@ -222,15 +242,15 @@ func (g *Generator) generateMessage(m *desc.MessageDescriptor, params *Parameter
 		if comment := f.GetSourceInfo().GetTrailingComments(); comment != "" {
 			trailingComment = " // " + strings.TrimSpace(comment)
 		}
-		g.W(fmt.Sprintf(indent+"%s%s: %s;%s", name, suffix, fieldType(f, params), trailingComment))
+		g.W(fmt.Sprintf(indent+"%s%s: %s;%s", name, suffix, fieldType(f, params, gfn), trailingComment))
 	}
 	g.W("}\n")
 }
 
-func fieldType(f *desc.FieldDescriptor, params *Parameters) string {
-	t := rawFieldType(f, params)
+func fieldType(f *desc.FieldDescriptor, params *Parameters, gfn GenerateFileName) string {
+	t := rawFieldType(f, params, gfn)
 	if f.IsMap() {
-		return fmt.Sprintf("{ [key: %s]: %s }", rawFieldType(f.GetMapKeyType(), params), rawFieldType(f.GetMapValueType(), params))
+		return fmt.Sprintf("{ [key: %s]: %s }", rawFieldType(f.GetMapKeyType(), params, gfn), rawFieldType(f.GetMapValueType(), params, gfn))
 	}
 	if f.IsRepeated() {
 		return fmt.Sprintf("Array<%s>", t)
@@ -238,7 +258,7 @@ func fieldType(f *desc.FieldDescriptor, params *Parameters) string {
 	return t
 }
 
-func rawFieldType(f *desc.FieldDescriptor, params *Parameters) string {
+func rawFieldType(f *desc.FieldDescriptor, params *Parameters, gfn GenerateFileName) string {
 	switch f.GetType() {
 	case descriptor.FieldDescriptorProto_TYPE_DOUBLE:
 		fallthrough
@@ -276,16 +296,10 @@ func rawFieldType(f *desc.FieldDescriptor, params *Parameters) string {
 		return "Uint8Array"
 	case descriptor.FieldDescriptorProto_TYPE_ENUM:
 		t := f.GetEnumType()
-		if t.GetFile().GetPackage() != f.GetFile().GetPackage() {
-			return t.GetFullyQualifiedName()
-		}
-		return packageQualifiedName(t)
+		return qualifiedTypeName(t, f.GetFile(), gfn)
 	case descriptor.FieldDescriptorProto_TYPE_MESSAGE:
 		t := f.GetMessageType()
-		if t.GetFile().GetPackage() != f.GetFile().GetPackage() {
-			return t.GetFullyQualifiedName()
-		}
-		return packageQualifiedName(t)
+		return qualifiedTypeName(t, f.GetFile(), gfn)
 	}
 	return "any /*unknown*/"
 }
@@ -312,22 +326,43 @@ func (g *Generator) generateEnum(e *desc.EnumDescriptor, params *Parameters) {
 	g.W("}")
 }
 
-func (g *Generator) generateService(service *desc.ServiceDescriptor, params *Parameters) {
+// https://godoc.org/github.com/jhump/protoreflect/desc#MessageDescriptor
+func qualifiedTypeName(msg desc.Descriptor, relativeTo *desc.FileDescriptor, gfn GenerateFileName) string {
+	if msg.GetFile().GetFullyQualifiedName() == relativeTo.GetFullyQualifiedName() {
+		return packageQualifiedName(msg)
+	}
+	
+	matched, err := regexp.MatchString(`^google\.protobuf\.`, msg.GetFullyQualifiedName())
+	if err == nil && matched == true {
+		return fmt.Sprintf("import('protobufjs').common.I%s", msg.GetName())
+	}
+
+	importFrom := gfn(msg.GetFile())
+	removeExtension := regexp.MustCompile(`(?:\.d)?\.tsx?$`)
+	importFrom = removeExtension.ReplaceAllString(importFrom, "")
+
+	return fmt.Sprintf(`import("%s").%s`, importFrom, msg.GetName())
+}
+
+func (g *Generator) generateService(service *desc.ServiceDescriptor, params *Parameters, gfn GenerateFileName) {
 	g.W(fmt.Sprintf("export interface %sService {", service.GetName()))
 	g.incIndent()
-	g.generateServiceMethods(service, params)
+	g.generateServiceMethods(service, params, gfn)
 	g.decIndent()
 	g.W(fmt.Sprintf("}"))
 }
 
-func (g *Generator) generateServiceMethods(service *desc.ServiceDescriptor, params *Parameters) {
+func (g *Generator) generateServiceMethods(service *desc.ServiceDescriptor, params *Parameters, gfn GenerateFileName) {
 	for _, m := range service.GetMethods() {
-		g.generateServiceMethod(m, params)
+		g.generateServiceMethod(m, params, gfn)
 	}
 }
-func (g *Generator) generateServiceMethod(method *desc.MethodDescriptor, params *Parameters) {
-	i := method.GetInputType().GetName()
-	o := method.GetOutputType().GetName()
+
+//"google.protobuf.Timestamp":   "import('protobufjs').common.ITimestamp",
+
+func (g *Generator) generateServiceMethod(method *desc.MethodDescriptor, params *Parameters, gfn GenerateFileName) {
+	i := qualifiedTypeName(method.GetInputType(), method.GetFile(), gfn)
+	o := qualifiedTypeName(method.GetOutputType(), method.GetFile(), gfn)
 	if params.AsyncIterators {
 		if method.IsServerStreaming() {
 			o = fmt.Sprintf("AsyncIterator<%s>", o)
@@ -336,6 +371,16 @@ func (g *Generator) generateServiceMethod(method *desc.MethodDescriptor, params 
 			i = fmt.Sprintf("AsyncIterator<%s>", i)
 		}
 		g.W(fmt.Sprintf("%s: (r:%s) => %s;", method.GetName(), i, o))
+	} else if params.Observables { 
+		if method.IsServerStreaming() {
+			o = fmt.Sprintf("Observable<%s>", o)
+		} else {
+			o = fmt.Sprintf("%s | Observable<%s>", o, o)
+		}
+		if method.IsClientStreaming() {
+			i = fmt.Sprintf("Observable<%s>", i)
+		}
+		g.W(fmt.Sprintf("%s: (r:%s, meta: Metadata) => %s;", method.GetName(), i, o))
 	} else {
 		ss, cs := method.IsServerStreaming(), method.IsClientStreaming()
 		if !(ss || cs) {

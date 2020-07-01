@@ -17,6 +17,7 @@ var (
 	flagVerbose               = flag.Int("v", 0, "verbosity level")
 	flagDeclareNamespace      = flag.Bool("declare_namespace", true, "if true, generate a namespace declaration")
 	flagAsyncIterators        = flag.Bool("async_iterators", false, "if true, user async iterators")
+	flagObservables           = flag.Bool("observables", false, "if true, use rxjs observables")
 	flagEnumsAsInts           = flag.Bool("int_enums", false, "if true, generate numeric enums")
 	flagOriginalNames         = flag.Bool("original_names", true, "if true, use original proto file field names, otherwise convert to lowerCamelCase")
 	flagOutputFilenamePattern = flag.String("outpattern", "{{.Dir}}/{{.Descriptor.GetPackage | default \"none\"}}.{{.BaseName}}.d.ts", "output filename pattern")
@@ -43,6 +44,7 @@ func main() {
 	parseFlags(g.Request.Parameter)
 	g.GenerateAllFiles(&gentstypes.Parameters{
 		AsyncIterators:        *flagAsyncIterators,
+		Observables:           *flagObservables,
 		DeclareNamespace:      *flagDeclareNamespace,
 		Verbose:               *flagVerbose,
 		OutputNamePattern:     *flagOutputFilenamePattern,

@@ -4,7 +4,7 @@ set -x
 
 cd testdata
 rm -fr output/*
-ds=(output/defaults output/int-enums output/camel-case-names output/outpattern-{1,2,3} output/wo-namespace output/async-iterators)
+ds=(output/defaults output/int-enums output/camel-case-names output/outpattern-{1,2,3} output/wo-namespace output/async-iterators output/observables)
 
 # GOPATH src root relative to the testdata directory
 gopath_root="../../../../../"
@@ -19,6 +19,7 @@ for e in $(ls ./*proto); do
     protoc -I. -I${gopath_root} --tstypes_out 'v=1,outpattern={{.Dir}}/{{.BaseName}}pb.d.ts:output/outpattern-3/' "${e}"
     protoc -I. -I${gopath_root} --tstypes_out=v=1,declare_namespace=false:output/wo-namespace/ "${e}"
     protoc -I. -I${gopath_root} --tstypes_out=v=1,async_iterators=true:output/async-iterators/ "${e}"
+    protoc -I. -I${gopath_root} --tstypes_out=v=1,observables=true:output/observables/ "${e}"
 done
 
 if [ "${CHECK:-}" != "0" ]; then
