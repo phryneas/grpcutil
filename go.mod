@@ -1,4 +1,4 @@
-module github.com/tmc/grpcutil
+module github.com/phryneas/grpcutil
 
 go 1.12
 
