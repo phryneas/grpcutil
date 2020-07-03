@@ -372,11 +372,7 @@ func (g *Generator) generateServiceMethod(method *desc.MethodDescriptor, params 
 		}
 		g.W(fmt.Sprintf("%s: (r:%s) => %s;", method.GetName(), i, o))
 	} else if params.Observables { 
-		if method.IsServerStreaming() {
-			o = fmt.Sprintf("Observable<%s>", o)
-		} else {
-			o = fmt.Sprintf("%s | Observable<%s>", o, o)
-		}
+		o = fmt.Sprintf("Observable<%s>", o)
 		if method.IsClientStreaming() {
 			i = fmt.Sprintf("Observable<%s>", i)
 		}
