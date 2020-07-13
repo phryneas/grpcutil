@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/Masterminds/sprig"
 	"github.com/davecgh/go-spew/spew"
@@ -363,6 +364,10 @@ func (g *Generator) generateServiceMethods(service *desc.ServiceDescriptor, para
 func (g *Generator) generateServiceMethod(method *desc.MethodDescriptor, params *Parameters, gfn GenerateFileName) {
 	i := qualifiedTypeName(method.GetInputType(), method.GetFile(), gfn)
 	o := qualifiedTypeName(method.GetOutputType(), method.GetFile(), gfn)
+	methodName := method.GetName()
+	if !params.OriginalNames {
+		methodName = jsonCamelCase(methodName)
+	}
 	if params.AsyncIterators {
 		if method.IsServerStreaming() {
 			o = fmt.Sprintf("AsyncIterator<%s>", o)
@@ -370,27 +375,51 @@ func (g *Generator) generateServiceMethod(method *desc.MethodDescriptor, params 
 		if method.IsClientStreaming() {
 			i = fmt.Sprintf("AsyncIterator<%s>", i)
 		}
-		g.W(fmt.Sprintf("%s: (r:%s) => %s;", method.GetName(), i, o))
+		g.W(fmt.Sprintf("%s: (r:%s) => %s;", methodName, i, o))
 	} else if params.Observables { 
 		o = fmt.Sprintf("Observable<%s>", o)
 		if method.IsClientStreaming() {
 			i = fmt.Sprintf("Observable<%s>", i)
 		}
-		g.W(fmt.Sprintf("%s: (r:%s, meta: Metadata) => %s;", method.GetName(), i, o))
+		g.W(fmt.Sprintf("%s: (r:%s, meta: Metadata) => %s;", methodName, i, o))
 	} else {
 		ss, cs := method.IsServerStreaming(), method.IsClientStreaming()
 		if !(ss || cs) {
-			g.W(fmt.Sprintf("%s: (r:%s) => %s;", method.GetName(), i, o))
+			g.W(fmt.Sprintf("%s: (r:%s) => %s;", methodName, i, o))
 			return
 		}
 		if !cs {
-			g.W(fmt.Sprintf("%s: (r:%s, cb:(a:{value: %s, done: boolean}) => void) => void;", method.GetName(), i, o))
+			g.W(fmt.Sprintf("%s: (r:%s, cb:(a:{value: %s, done: boolean}) => void) => void;", methodName, i, o))
 			return
 		}
 		if !ss {
-			g.W(fmt.Sprintf("%s: (r:() => {value: %s, done: boolean}) => %s;", method.GetName(), i, o))
+			g.W(fmt.Sprintf("%s: (r:() => {value: %s, done: boolean}) => %s;", methodName, i, o))
 			return
 		}
-		g.W(fmt.Sprintf("%s: (r:() => {value: %s, done: boolean}, cb:(a:{value: %s, done: boolean}) => void) => void;", method.GetName(), i, o))
+		g.W(fmt.Sprintf("%s: (r:() => {value: %s, done: boolean}, cb:(a:{value: %s, done: boolean}) => void) => void;", methodName, i, o))
 	}
+}
+
+// modified version of
+// github.com/jhump/protoreflect/desc/descriptor.go
+func jsonCamelCase(s string) string {
+	var buf bytes.Buffer
+	prevWasUnderscore := false
+	first := true
+	for _, r := range s {
+		if first {
+			first = false
+			r = unicode.ToLower(r)
+		}
+		if r == '_' {
+			prevWasUnderscore = true
+			continue
+		}
+		if prevWasUnderscore {
+			r = unicode.ToUpper(r)
+			prevWasUnderscore = false
+		}
+		buf.WriteRune(r)
+	}
+	return buf.String()
 }
